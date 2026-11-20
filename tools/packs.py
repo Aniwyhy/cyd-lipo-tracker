@@ -14,6 +14,9 @@ import argparse, glob, os, subprocess, sys, tempfile, time
 try:
     import serial
 except ImportError:
+    pio_py = os.path.expanduser("~/.platformio/penv/bin/python")  # PlatformIO ships pyserial
+    if os.path.exists(pio_py) and os.path.realpath(sys.executable) != os.path.realpath(pio_py):
+        os.execv(pio_py, [pio_py] + sys.argv)
     sys.exit("pyserial is missing: pip install pyserial  (or run with ~/.platformio/penv/bin/python)")
 
 
