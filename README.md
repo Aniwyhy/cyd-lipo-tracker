@@ -12,6 +12,19 @@ Field tracker for LiPo packs on the 4" "Cheap Yellow Display" (ESP32-3248S040: S
 
 Data is saved to flash (LittleFS, `/packs.txt`) and survives power cycles. The screen dims after 2 minutes idle; the first touch only wakes it.
 
+## LiPo Editor (desktop)
+
+A graphical editor for the whole list: names, cells, capacity, HV, in kit or not, and state, with the same battery icons as the board.
+Double-click **LiPo Editor.command** in Finder, or run:
+
+```bash
+python3 tools/lipo_editor.py
+```
+
+It opens in your browser (served from your Mac only, works offline). With the CYD plugged in it loads the board's list automatically;
+edit, then **Send to board** (⌘S). **Open file… / Save file…** work with `packs.txt` files when the board isn't around.
+Close the Terminal window or press **Quit** to stop it. pyserial is picked up from PlatformIO's Python automatically.
+
 ## Editing the list as a file
 
 The arsenal and kit live in a plain-text file on the board, one pack per line:

@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LiPo Editor</title>
+<style>
+  :root {
+    --bg: #151413; --card: #24221f; --card-dim: #1b1a18; --card-hi: #2e2b28; --line: #4a4742;
+    --fg: #f4f1ea; --dim: #8f8b82; --faint: #5e5a54; --accent: #e2795a; --accent-dk: #b95e45;
+    --key: #2c2a27; --key-sp: #3d3a36;
+    --charged: #4cc38a; --storage: #5aa9e6; --discharged: #e8a33d; --dead: #e5615a; --hv: #b79bff; --hv-ink: #1d1630;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  button, input, select { font: inherit; color: inherit; }
+  button { cursor: pointer; border: 0; border-radius: 10px; background: var(--key-sp); padding: 8px 14px; font-weight: 600; }
+  button:hover:not(:disabled) { filter: brightness(1.15); }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: var(--accent); }
+  button.ghost { background: transparent; color: var(--dim); }
+  button.ghost:hover { color: var(--fg); }
+
+  header { position: sticky; top: 0; z-index: 5; background: rgba(21,20,19,.94); backdrop-filter: blur(8px);
+    border-bottom: 1px solid #2a2826; }
+  .bar { display: flex; align-items: center; gap: 10px; padding: 12px 20px; flex-wrap: wrap; max-width: 1400px; margin: 0 auto; }
+  .title { display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 700; margin-right: 8px; }
+  .spacer { flex: 1; }
+  .group { display: flex; gap: 2px; }
+  .status { display: flex; align-items: center; gap: 8px; background: var(--card); border-radius: 20px; padding: 6px 12px; color: var(--dim); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); }
+  .dot.on { background: var(--charged); box-shadow: 0 0 8px var(--charged); }
+  .status select { background: transparent; border: 0; color: var(--fg); max-width: 220px; }
+  .unsent { color: var(--accent); font-weight: 600; display: none; }
+  .unsent.show { display: inline; }
+
+  .tabs { display: flex; background: var(--card); border-radius: 22px; padding: 3px; }
+  .tabs button { background: transparent; border-radius: 19px; color: var(--dim); padding: 7px 18px; }
+  .tabs button.sel { background: var(--accent); color: var(--fg); }
+  .chips { display: flex; gap: 8px; }
+  .chip { display: flex; align-items: center; gap: 7px; background: var(--card); border-radius: 16px; padding: 4px 12px 4px 9px;
+    font-weight: 700; font-size: 16px; }
+  .chip.zero { color: var(--faint); }
+
+  main { max-width: 1400px; margin: 0 auto; padding: 18px 20px 60px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; }
+  .card { background: var(--card); border-radius: 16px; padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 12px;
+    border: 2px solid transparent; transition: border-color .15s; }
+  .card.out { background: var(--card-dim); }
+  .card.out .name { color: var(--dim); }
+  .card:focus-within { border-color: #3a3632; }
+  .top { display: flex; gap: 14px; align-items: center; }
+  .top svg { flex: none; }
+  .ident { flex: 1; min-width: 0; }
+  .name { width: 100%; background: transparent; border: 0; border-bottom: 1px dashed transparent; font-size: 19px; font-weight: 700;
+    padding: 2px 0; outline: none; }
+  .name:hover { border-bottom-color: var(--line); }
+  .name:focus { border-bottom-color: var(--accent); }
+  .meta { color: var(--dim); display: flex; gap: 8px; align-items: center; margin-top: 3px; flex-wrap: wrap; }
+  .hvbadge { background: var(--hv); color: var(--hv-ink); border-radius: 9px; padding: 0 7px; font-weight: 800; font-size: 12px; }
+  .tools { display: flex; flex-direction: column; gap: 2px; align-self: flex-start; }
+  .tools button { background: transparent; color: var(--faint); padding: 2px 6px; font-size: 13px; border-radius: 6px; }
+  .tools button:hover { color: var(--fg); background: var(--key); }
+  .tools button.del:hover { color: var(--dead); }
+
+  .row { display: flex; align-items: center; gap: 10px; }
+  .lbl { width: 62px; flex: none; color: var(--faint); font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+  .seg { display: flex; gap: 4px; flex: 1; }
+  .seg button { flex: 1; background: var(--key); color: var(--dim); padding: 6px 0; border-radius: 8px; font-size: 13px; }
+  .seg button.sel { background: var(--accent); color: var(--fg); }
+  .cap { display: flex; align-items: center; gap: 6px; flex: 1; }
+  .cap button { width: 34px; padding: 5px 0; background: var(--key); font-size: 16px; }
+  .cap input { width: 90px; text-align: center; background: var(--key); border: 1px solid transparent; border-radius: 8px; padding: 5px;
+    font-weight: 700; font-size: 15px; outline: none; }
+  .cap input:focus { border-color: var(--accent); }
+  .cap span { color: var(--dim); }
+  .toggles { display: flex; gap: 8px; flex: 1; }
+  .tog { flex: 1; background: var(--key); color: var(--dim); display: flex; align-items: center; justify-content: center; gap: 6px; }
+  .tog.hv.sel { background: var(--hv); color: var(--hv-ink); }
+  .tog.kit.sel { background: var(--fg); color: var(--bg); }
+  .states { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; flex: 1; }
+  .states button { background: var(--key); color: var(--dim); padding: 6px 2px; font-size: 12px; border-radius: 8px;
+    border: 2px solid transparent; }
+  .states button.sel { color: var(--bg); }
+
+  .add { border: 2px dashed var(--line); background: transparent; border-radius: 16px; min-height: 160px; color: var(--dim);
+    font-size: 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; }
+  .add:hover { border-color: var(--accent); color: var(--fg); }
+  .add b { font-size: 34px; line-height: 1; font-weight: 300; }
+
+  .empty { text-align: center; color: var(--dim); padding: 70px 20px; }
+  .empty h2 { color: var(--fg); margin: 16px 0 6px; }
+
+  #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(20px); opacity: 0;
+    background: #33302c; padding: 10px 18px; border-radius: 12px; transition: all .2s; pointer-events: none; max-width: 90vw;
+    box-shadow: 0 6px 30px rgba(0,0,0,.5); }
+  #toast.show { opacity: 1; transform: translateX(-50%); }
+  #toast.err { background: #5a2523; }
+  .hint { color: var(--faint); font-size: 12px; text-align: center; margin-top: 26px; }
+  kbd { background: var(--key); border-radius: 4px; padding: 1px 5px; font: 12px ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div class="title"><span id="logo"></span>LiPo Editor</div>
+    <div class="status" title="The CYD over USB">
+      <span class="dot" id="dot"></span><span id="stext">No board</span>
+      <select id="ports" hidden></select>
+    </div>
+    <button id="load" title="Replace this list with the one on the board">Load from board</button>
+    <button id="send" class="primary" title="Replace the board's list with this one (Cmd-S)">Send to board</button>
+    <span class="unsent" id="unsent">Unsent changes</span>
+    <span class="spacer"></span>
+    <div class="group">
+      <button class="ghost" id="open">Open file…</button>
+      <button class="ghost" id="save">Save file…</button>
+      <button class="ghost" id="quit" title="Stop the editor">Quit</button>
+    </div>
+    <input type="file" id="file" accept=".txt,text/plain" hidden>
+  </div>
+  <div class="bar" style="padding-top:0">
+    <div class="tabs">
+      <button data-tab="all" class="sel">Arsenal <span id="nAll"></span></button>
+      <button data-tab="kit">Kit <span id="nKit"></span></button>
+    </div>
+    <div class="chips" id="chips" title="Packs in your kit, by state"></div>
+    <span class="spacer"></span>
+    <div class="group">
+      <button class="ghost" id="bulkChg">Kit: all charged</button>
+      <button class="ghost" id="bulkSto">Kit: all storage</button>
+    </div>
+  </div>
+</header>
+<main>
+  <div class="grid" id="grid"></div>
+  <div class="hint">Changes stay here until you press <b>Send to board</b> (<kbd>⌘S</kbd>). Dead packs are skipped by the "all" buttons.</div>
+</main>
+<div id="toast"></div>
+
+<script>
+const STATES = ["charged", "storage", "discharged", "dead"];
+const LABEL = {charged: "Charged", storage: "Storage", discharged: "Discharged", dead: "Dead"};
+const LEVEL = {charged: 1, storage: .55, discharged: .2, dead: 0};
+const COLOR = {charged: "#4cc38a", storage: "#5aa9e6", discharged: "#e8a33d", dead: "#e5615a"};
+const CELLV = {charged: [4.20, 4.35], storage: [3.80, 3.85], discharged: [3.5, 3.5]};
+const CAPS = [150,200,250,300,350,450,550,650,750,850,1000,1100,1300,1400,1500,1550,1800,2000,2200,2600,3000,3300,4000,4500,5000,6000,6500,8000,10000];
+const MAX_NAME = 14, MAX_PACKS = 60;
+
+let packs = [], tab = "all", dirty = false, port = null, loadedOnce = false, busy = false;
+const $ = id => document.getElementById(id);
+
+// ---------------------------------------------------------------- battery icon (same look as the CYD)
+function battery(cells, state, w, h) {
+  const nubW = Math.max(3, Math.round(w / 22)), nubH = Math.round(h * .4), bw = w - nubW;
+  const r = Math.max(3, h / 6), t = h >= 40 ? 3 : 2, pad = t + Math.max(2, Math.round(h / 14));
+  const gap = (w < 70 || cells > 6) ? 2 : 3, iw = bw - 2 * pad, ih = h - 2 * pad;
+  const segW = (iw - gap * (cells - 1)) / cells;
+  const lvl = state in LEVEL ? LEVEL[state] : 0, on = COLOR[state] || "#2e2c29";
+  const line = state === "dead" ? COLOR.dead : "#6e6a63";
+  let s = `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true">`;
+  s += `<rect x="${bw - 2}" y="${(h - nubH) / 2}" width="${nubW + 2}" height="${nubH}" rx="${nubW / 2}" fill="${line}"/>`;
+  s += `<rect x="0" y="0" width="${bw}" height="${h}" rx="${r}" fill="${line}"/>`;
+  s += `<rect x="${t}" y="${t}" width="${bw - 2 * t}" height="${h - 2 * t}" rx="${Math.max(1, r - t)}" fill="#161514"/>`;
+  for (let i = 0; i < cells; i++) {
+    const x = pad + i * (segW + gap), fh = ih * lvl;
+    s += `<rect x="${x}" y="${pad}" width="${segW}" height="${ih}" rx="2" fill="#2e2c29"/>`;
+    if (fh > 0) s += `<rect x="${x}" y="${pad + ih - fh}" width="${segW}" height="${fh}" rx="${Math.min(2, fh / 2)}" fill="${on}"/>`;
+  }
+  if (state === "dead") {
+    const cx = bw / 2, cy = h / 2, d = Math.min(bw, h) / 3, sw = h >= 40 ? 3.5 : 2.2;
+    s += `<path d="M${cx - d} ${cy - d}L${cx + d} ${cy + d}M${cx - d} ${cy + d}L${cx + d} ${cy - d}" stroke="${COLOR.dead}" stroke-width="${sw}" stroke-linecap="round"/>`;
+  }
+  return s + "</svg>";
+}
+const bolt = (c, sz = 12) => `<svg width="${sz * .7}" height="${sz}" viewBox="0 0 7 12"><path d="M4.5 0L0 7h3L2 12l5-7.5H4z" fill="${c}"/></svg>`;
+$("logo").innerHTML = battery(4, "charged", 34, 18);
+
+// ---------------------------------------------------------------- server calls
+async function call(path, body = {}) {
+  const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const j = await r.json();
+  if (j.error) throw new Error(j.error);
+  return j;
+}
+let toastT;
+function toast(msg, err = false) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "show" + (err ? " err" : "");
+  clearTimeout(toastT);
+  toastT = setTimeout(() => t.className = "", err ? 5000 : 2500);
+}
+function setDirty(d) { dirty = d; $("unsent").classList.toggle("show", d); }
+
+async function poll() {
+  try {
+    const {ports} = await call("/api/status");
+    const sel = $("ports");
+    if (!ports.includes(port)) port = ports[0] || null;
+    sel.innerHTML = ports.map(p => `<option ${p === port ? "selected" : ""}>${p}</option>`).join("");
+    sel.hidden = ports.length < 2;
+    $("dot").classList.toggle("on", !!port);
+    $("stext").textContent = port ? (ports.length < 2 ? "CYD on " + port.replace("/dev/cu.", "") : "CYD on") : "No board";
+    $("load").disabled = $("send").disabled = !port || busy;
+    if (port && !loadedOnce && !dirty) { loadedOnce = true; loadBoard(true); }
+  } catch (e) {
+    $("stext").textContent = "Editor stopped";
+    $("dot").classList.remove("on");
+    $("load").disabled = $("send").disabled = true;
+  }
+}
+$("ports").onchange = e => port = e.target.value;
+
+async function withBusy(fn) {
+  busy = true; $("load").disabled = $("send").disabled = true;
+  try { await fn(); } catch (e) { toast(e.message, true); }
+  busy = false; poll();
+}
+function loadBoard(quiet) {
+  if (!quiet && dirty && !confirm("Replace your unsent changes with the board's list?")) return;
+  withBusy(async () => {
+    $("stext").textContent = "Reading…";
+    const j = await call("/api/load", {port});
+    packs = j.packs; setDirty(false); render();
+    toast(`Loaded ${packs.length} packs from the board`);
+  });
+}
+function sendBoard() {
+  if (!port) return toast("Plug in the CYD first, or use Save file…", true);
+  withBusy(async () => {
+    $("stext").textContent = "Sending…";
+    const j = await call("/api/send", {port, packs});
+    setDirty(false);
+    toast("Board updated: " + j.reply);
+  });
+}
+$("load").onclick = () => loadBoard(false);
+$("send").onclick = sendBoard;
+
+// files
+$("open").onclick = () => $("file").click();
+$("file").onchange = async e => {
+  const f = e.target.files[0];
+  e.target.value = "";
+  if (!f) return;
+  if (dirty && !confirm("Replace your unsent changes with " + f.name + "?")) return;
+  try {
+    const j = await call("/api/parse", {text: await f.text()});
+    packs = j.packs; setDirty(true); render();
+    toast(`Opened ${f.name}: ${packs.length} packs`);
+  } catch (err) { toast(err.message, true); }
+};
+$("save").onclick = async () => {
+  try {
+    const {text} = await call("/api/format", {packs});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], {type: "text/plain"}));
+    a.download = "packs.txt";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (err) { toast(err.message, true); }
+};
+$("quit").onclick = async () => {
+  if (dirty && !confirm("Quit without sending your changes to the board?")) return;
+  dirty = false;
+  try { await call("/api/quit"); } catch (e) {}
+  document.body.innerHTML = '<div class="empty"><h2>LiPo Editor stopped</h2>You can close this tab.</div>';
+};
+window.addEventListener("beforeunload", e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+document.addEventListener("keydown", e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); port ? sendBoard() : $("save").click(); }
+});
+
+// ---------------------------------------------------------------- list
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
+  tab = b.dataset.tab;
+  document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("sel", x === b));
+  render();
+});
+function bulk(state) {
+  const n = packs.filter(p => p.kit && p.state !== "dead" && p.state !== state).length;
+  if (!n) return toast("Nothing to change");
+  packs.forEach(p => { if (p.kit && p.state !== "dead") p.state = state; });
+  setDirty(true); render();
+  toast(`${n} ${n === 1 ? "pack" : "packs"} set to ${LABEL[state]}`);
+}
+$("bulkChg").onclick = () => bulk("charged");
+$("bulkSto").onclick = () => bulk("storage");
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const packV = p => p.state === "dead" ? "" : (p.state === "discharged" ? "~" : "") +
+  (CELLV[p.state][p.hv ? 1 : 0] * p.cells).toFixed(1) + "V";
+
+function card(p, i) {
+  const cells = [1,2,3,4,5,6,7,8].map(n => `<button data-act="cells" data-v="${n}" class="${p.cells === n ? "sel" : ""}">${n}S</button>`).join("");
+  const states = STATES.map(s => {
+    const sel = p.state === s;
+    return `<button data-act="state" data-v="${s}" class="${sel ? "sel" : ""}" style="${sel ? `background:${COLOR[s]}` : `color:${COLOR[s]}`}">${LABEL[s]}</button>`;
+  }).join("");
+  return `<div class="card ${p.kit ? "" : "out"}" data-i="${i}">
+    <div class="top">
+      ${battery(p.cells, p.state, 104, 44)}
+      <div class="ident">
+        <input class="name" data-act="name" value="${esc(p.name)}" maxlength="${MAX_NAME}" spellcheck="false" placeholder="Name">
+        <div class="meta">${p.cells}S · ${p.mah} mAh ${p.hv ? `<span class="hvbadge">⚡HV</span>` : ""}
+          <span style="color:${COLOR[p.state]}">· ${LABEL[p.state]} ${packV(p)}</span></div>
+      </div>
+      <div class="tools">
+        <button data-act="up" title="Move up">▲</button>
+        <button data-act="down" title="Move down">▼</button>
+        <button data-act="del" class="del" title="Delete">✕</button>
+      </div>
+    </div>
+    <div class="row"><span class="lbl">Cells</span><div class="seg">${cells}</div></div>
+    <div class="row"><span class="lbl">Capacity</span><div class="cap">
+      <button data-act="capdn" title="Smaller">−</button>
+      <input data-act="mah" type="number" min="50" max="30000" step="50" value="${p.mah}">
+      <button data-act="capup" title="Bigger">+</button><span>mAh</span></div></div>
+    <div class="row"><span class="lbl">Type</span><div class="toggles">
+      <button data-act="hv" class="tog hv ${p.hv ? "sel" : ""}">${bolt(p.hv ? "#1d1630" : "#8f8b82")} ${p.hv ? "HV 4.35V" : "Standard 4.20V"}</button>
+      <button data-act="kit" class="tog kit ${p.kit ? "sel" : ""}">${p.kit ? "✓ In kit" : "At home"}</button></div></div>
+    <div class="row"><span class="lbl">State</span><div class="states">${states}</div></div>
+  </div>`;
+}
+
+function render() {
+  const kit = packs.filter(p => p.kit);
+  $("nAll").textContent = packs.length;
+  $("nKit").textContent = kit.length;
+  $("chips").innerHTML = STATES.map(s => {
+    const n = kit.filter(p => p.state === s).length;
+    return `<span class="chip ${n ? "" : "zero"}" style="${n ? `color:${COLOR[s]}` : ""}" title="${LABEL[s]}">${battery(2, n ? s : "", 26, 15)}${n}</span>`;
+  }).join("");
+  const show = packs.map((p, i) => [p, i]).filter(([p]) => tab === "all" || p.kit);
+  let html = show.map(([p, i]) => card(p, i)).join("");
+  if (!packs.length && !port) {
+    html = `<div class="empty" style="grid-column:1/-1">${battery(4, "", 110, 48)}<h2>No packs loaded</h2>
+      Plug in the CYD to load its list, or open a packs.txt file.</div>`;
+  } else if (tab === "kit" && !kit.length) {
+    html = `<div class="empty" style="grid-column:1/-1">${battery(4, "", 110, 48)}<h2>Your kit is empty</h2>
+      Switch to Arsenal and mark the packs you're bringing as "In kit".</div>`;
+  }
+  if (packs.length < MAX_PACKS) html += `<button class="add" id="add"><b>+</b>Add pack</button>`;
+  $("grid").innerHTML = html;
+  const add = $("add");
+  if (add) add.onclick = () => {
+    const last = packs[packs.length - 1];
+    packs.push({name: "", cells: last ? last.cells : 4, mah: last ? last.mah : 1300, hv: last ? last.hv : false,
+                kit: tab === "kit", state: "charged"});
+    setDirty(true); render();
+    const inputs = document.querySelectorAll(".name");
+    inputs[inputs.length - 1].focus();
+  };
+}
+
+function stepCap(p, dir) {
+  if (dir > 0) p.mah = CAPS.find(c => c > p.mah) || p.mah;
+  else p.mah = [...CAPS].reverse().find(c => c < p.mah) || p.mah;
+}
+
+$("grid").addEventListener("click", e => {
+  const b = e.target.closest("button[data-act]");
+  if (!b) return;
+  const i = +b.closest(".card").dataset.i, p = packs[i], act = b.dataset.act;
+  if (act === "cells") p.cells = +b.dataset.v;
+  else if (act === "state") p.state = b.dataset.v;
+  else if (act === "hv") p.hv = !p.hv;
+  else if (act === "kit") p.kit = !p.kit;
+  else if (act === "capup") stepCap(p, 1);
+  else if (act === "capdn") stepCap(p, -1);
+  else if (act === "up" && i > 0) [packs[i - 1], packs[i]] = [packs[i], packs[i - 1]];
+  else if (act === "down" && i < packs.length - 1) [packs[i + 1], packs[i]] = [packs[i], packs[i + 1]];
+  else if (act === "del") {
+    if (!confirm(`Delete ${p.name || "this pack"}?`)) return;
+    packs.splice(i, 1);
+  } else return;
+  setDirty(true); render();
+});
+$("grid").addEventListener("input", e => {
+  const el = e.target, c = el.closest(".card");
+  if (!c) return;
+  const p = packs[+c.dataset.i];
+  if (el.dataset.act === "name") {
+    const clean = el.value.replace(/[^\x20-\x7e]|\|/g, "").slice(0, MAX_NAME);
+    if (clean !== el.value) el.value = clean;
+    p.name = clean;
+  }
+  if (el.dataset.act === "mah" && +el.value >= 50) p.mah = Math.min(30000, Math.round(+el.value));
+  setDirty(true);
+});
+$("grid").addEventListener("change", e => {
+  const el = e.target, c = el.closest(".card");
+  if (!c) return;
+  const p = packs[+c.dataset.i];
+  if (el.dataset.act === "mah") p.mah = Math.max(50, Math.min(30000, Math.round(+el.value || 1300)));
+  if (el.dataset.act === "name") p.name = p.name.trim() || `${p.cells}S pack`;
+  setDirty(true); render();
+});
+
+render();
+poll();
+setInterval(poll, 2000);
+</script>
+</body>
+</html>
