@@ -1,0 +1,13 @@
+# LiPo tracker packs. One per line:  name | cells | capacity | HV | kit | state
+#   cells: 1S..8S    capacity: e.g. 1300mAh    HV: write HV for high-voltage packs
+#   kit: write kit if the pack is coming with you    state: charged, storage, discharged, dead
+# Fields after the name can be in any order; missing ones default to 4S 1300mAh, not HV, home, charged.
+
+Race A         | 6S |  1300mAh |    | kit | charged
+Race B         | 6S |  1300mAh |    | kit | charged
+Race C         | 6S |  1300mAh |    | kit | storage
+Cine 4S        | 4S |  1500mAh |    | kit | charged
+Whoop 1        | 1S |   450mAh | HV | kit | discharged
+Whoop 2        | 1S |   450mAh | HV | kit | charged
+Long range     | 6S |  3000mAh |    |     | storage
+Puffy          | 4S |  1500mAh |    |     | dead
