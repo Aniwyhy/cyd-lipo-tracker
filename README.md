@@ -14,24 +14,21 @@ Data is saved to flash (LittleFS, `/packs.txt`) and survives power cycles.
 
 ## Board battery and power (v1.1+)
 
-When the CYD runs off a 1S LiPo on its battery/power pins, the pill at the top right shows that LiPo's voltage, colored green / amber (below 3.75 V) / red (at or below 3.60 V). **Tap it** for the **Power** screen.
+With a 1S LiPo on the board's battery connector, the pill at the top right shows its voltage, colored green / amber (below 3.75 V) / red (at or below 3.60 V). **Tap it** for the **Power** screen.
 
-How it reads the voltage without extra hardware: the board's 3.3 V regulator (AMS1117) can't hold 3.3 V from a single cell, so its output tracks the LiPo, roughly 1 V lower. The firmware measures that rail through the BOOT button's pull-up on GPIO0 and adds the regulator drop back. Two consequences:
-
-- Above about 4.0–4.1 V (and on USB) the rail is a full 3.3 V and the ADC tops out, so it shows **4.1V+** instead of a number.
-- The drop varies from board to board. **Calibrate** once: measure the LiPo with a checker, then tap − / + until the Power screen shows the same voltage. Calibrate at your usual brightness. If the LiPo feeds the board through a 5 V boost converter, it always shows 4.1V+ and can't read the cell.
+The battery connector is wired to **IO34** through a divider that roughly halves the voltage, so no extra hardware is needed. Resistor tolerance makes the exact ratio vary from board to board, so **Calibrate** once: run the board on the LiPo (USB unplugged), measure the cell with a checker, then tap − / + until the Power screen shows the same voltage. With USB plugged in, the board's charger is topping the cell up, so the reading is the charging voltage (about 4.2 V), not the cell's resting voltage. With no LiPo connected, it shows "--".
 
 Safety:
 
 - **Low warning** at 3.60 V: a sheet asks you to charge it soon.
-- **Cut-off** (Off / 3.3 / 3.4 / 3.5 V, default 3.4 V): 20 s under it, the board shows "Battery empty" and goes into deep sleep so the cell isn't over-discharged. It also won't start on a cell that's already under it. Press **BOOT** to wake it after charging. Tap the screen while the message is up to keep using it anyway (no cut-off until the next restart). Even asleep, the regulator draws a few mA, so unplug the LiPo to store it.
+- **Cut-off** (Off / 3.3 / 3.4 / 3.5 V, default 3.4 V): 20 s under it, the board shows "Battery empty" and goes into deep sleep so the cell isn't over-discharged. It also won't start on a cell that's already under it. Press **BOOT** to wake it after charging. Tap the screen while the message is up to keep using it anyway (no cut-off until the next restart). Even asleep, the board draws a few mA, so unplug the LiPo to store it.
 - **Brown-out guard**: if the cell sags so far that the ESP32 resets, it goes straight back to sleep with the screen off instead of rebooting over and over.
 
 Energy saving:
 
 - **Brightness**: Low / Mid / High.
 - **Dim after** 30 s / 1 / 2 / 5 min idle (default 1 min). The screen turns off a minute after dimming and the CPU drops from 240 to 80 MHz. The first touch only wakes it; BOOT wakes it too.
-- **Sleep after** 5 / 15 / 30 min / Off (default 15 min): deep sleep when idle, on battery only (never on USB, so the desktop editor can always reach it). Press BOOT to wake.
+- **Sleep after** 5 / 15 / 30 min / Off (default 15 min): deep sleep when idle with a LiPo connected. Press BOOT to wake. Opening the desktop editor or `packs.py` resets the board over USB, which wakes it too.
 
 ## LiPo Editor (desktop)
 
@@ -93,5 +90,6 @@ Reuses the CYD Checklist's calibration if that was on the board before; otherwis
 - `shot`: dumps the screen as RLE RGB888 (rendered from the off-screen buffer; the on-screen keyboard keys aren't included)
 - `t x y`: tap, `h x y`: long press
 - `get`: prints packs.txt between `BEGIN` and `END`; `put`: the following lines up to `END` replace it
-- `bat`: board battery reading (rail, estimated LiPo voltage, %, calibration, cut-off)
-- `batsim <mV>`: pretend the 3.3 V rail reads this many mV (testing the low-battery screens on USB); `batsim 0` turns it off
+- `bat`: board battery reading (IO34, LiPo voltage, %, calibration, cut-off)
+- `batsim <mV>`: pretend IO34 reads this many mV (testing the low-battery screens on USB); `batsim 0` turns it off
+- `adcscan`: millivolts on the free ADC pins (32, 34, 35, 36, 39, 4, 25, 26), for finding the battery pin on other CYD variants

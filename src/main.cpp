@@ -3,7 +3,7 @@
 //   hold to edit, + New to add one.
 // - Kit: the packs you brought, as cards. Tap a card to set Charged / Storage / Discharged / Dead.
 // - Everything persists in LittleFS. Touch calibration in NVS (hold BOOT 2 s to recalibrate).
-// - Power: reads the LiPo powering the board (no extra hardware, see "board battery"), warns when it runs low,
+// - Power: reads the LiPo on the battery connector (IO34 divider), warns when it runs low,
 //   switches off before it is over-discharged, dims / blanks the screen and deep-sleeps when idle.
 // - Serial (115200): "shot" dumps the screen (RLE rgb888), "t x y" taps, "h x y" long-presses, "bat" battery info.
 
@@ -11,15 +11,13 @@
 #include <LovyanGFX.hpp>
 #include <LittleFS.h>
 #include <Preferences.h>
-#include <driver/adc.h>
 #include <driver/gpio.h>
 #include <driver/rtc_io.h>
-#include <esp_adc_cal.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
 #include <vector>
 
-static const char* FW_VERSION = "1.1.1";
+static const char* FW_VERSION = "1.1.2";
 
 // ---------------------------------------------------------------- display
 class LGFX : public lgfx::LGFX_Device {
@@ -271,10 +269,10 @@ static void loadPacks() {
 }
 
 // ---------------------------------------------------------------- board battery
-// The CYD has no battery-sense circuit, but on a 1S LiPo its 3.3 V regulator (AMS1117) runs in dropout, so the
-// 3.3 V rail follows the cell: rail ~= cell - dropout. The rail is read through the BOOT button's pull-up on GPIO0
-// (ADC2 channel 1, free because Wi-Fi is never started). Above ~3.1 V the ADC saturates: that's USB power or a cell
-// near full (above ~4.1 V). The dropout depends on the board and the load; "Calibrate" in Power adjusts it.
+// The 4" CYD has its battery connector wired to IO34 through a divider that roughly halves it (found by measuring:
+// 1.98 V on IO34 with a 3.89 V cell). IO34 is an input-only ADC1 pin, so no conflict with anything else.
+// The divider's exact ratio varies with resistor tolerance; "Calibrate" in Power adjusts it. On USB the charger
+// holds the node at its charging voltage, so with USB plugged in the reading is the charge voltage, not the rest.
 static const uint8_t BRI_LVL[] = {60, 130, 210};
 static const char* BRI_NAME[] = {"Low", "Mid", "High"};
 static const uint16_t DIM_S[] = {30, 60, 120, 300};
@@ -284,77 +282,62 @@ static const char* SLP_NAME[] = {"5m", "15m", "30m", "Off"};
 static const uint16_t CUT_MV[] = {0, 3300, 3400, 3500};
 static const char* CUT_NAME[] = {"Off", "3.3V", "3.4V", "3.5V"};
 static const int WARN_MV = 3600, DIM_BRI = 25;
-static const int DROP_MIN = 200, DROP_MAX = 1600, DROP_DEF = 1000;
+static const uint8_t BATT_PIN = 34;
+static const int SCALE_MIN = 1700, SCALE_MAX = 2300, SCALE_DEF = 2000;  // divider ratio x1000
+static const int CELL_MIN = 2500, CELL_MAX = 4600;                      // outside this: no LiPo on the connector
 
-struct PowerCfg { uint8_t bri, dim, slp, cut; int16_t dropMv; };
-static PowerCfg pcfg = {2, 1, 1, 2, DROP_DEF};
+struct PowerCfg { uint8_t bri, dim, slp, cut; int16_t scale; };
+static PowerCfg pcfg = {2, 1, 1, 2, SCALE_DEF};
 
 static void loadPowerCfg() {
   pcfg.bri = min<uint8_t>(prefs.getUChar("p_bri", 2), 2);
   pcfg.dim = min<uint8_t>(prefs.getUChar("p_dim", 1), 3);
   pcfg.slp = min<uint8_t>(prefs.getUChar("p_slp", 1), 3);
   pcfg.cut = min<uint8_t>(prefs.getUChar("p_cut", 2), 3);
-  pcfg.dropMv = constrain(prefs.getShort("p_drop", DROP_DEF), DROP_MIN, DROP_MAX);
+  pcfg.scale = constrain(prefs.getShort("p_scale", SCALE_DEF), SCALE_MIN, SCALE_MAX);
 }
 static void savePowerCfg() {
   prefs.putUChar("p_bri", pcfg.bri);
   prefs.putUChar("p_dim", pcfg.dim);
   prefs.putUChar("p_slp", pcfg.slp);
   prefs.putUChar("p_cut", pcfg.cut);
-  prefs.putShort("p_drop", pcfg.dropMv);
+  prefs.putShort("p_scale", pcfg.scale);
 }
 
-enum BattKind : uint8_t { B_NONE, B_EXT, B_BATT };  // no reading yet / USB or full / reading the LiPo
+enum BattKind : uint8_t { B_NONE, B_BATT };  // no LiPo (or no reading yet) / reading the LiPo
 static BattKind battKind = B_NONE;
-static float railMv = 0;   // filtered rail voltage
+static float pinMv = 0;    // filtered IO34 voltage
 static int shownMv = 0;    // what the screen shows (changes in steps, so it doesn't flicker)
-static int extRun = 0, battRun = 0;
-static esp_adc_cal_characteristics_t adcChars;
-static bool adcReady = false;
-static int lastRaw = -1, simRailMv = 0;  // serial "batsim <rail mV>" fakes a reading for testing (0 = off)
+static int lastPinMv = 0, simPinMv = 0;  // serial "batsim <IO34 mV>" fakes a reading for testing (0 = off)
+static int noneRun = 0, battRun = 0;
 
-static int battMv() { return (int)lroundf(railMv) + pcfg.dropMv; }
+static int battMv() { return (int)lroundf(pinMv * pcfg.scale / 1000.0f); }
 
-// One reading of the rail in mV. 0 = no reading (BOOT pressed), -1 = saturated (USB / full cell).
-static int readRailMv() {
-  if (!adcReady) {
-    esp_adc_cal_characterize(ADC_UNIT_2, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 1100, &adcChars);
-    adcReady = true;
-  }
-  adc2_config_channel_atten(ADC2_CHANNEL_1, ADC_ATTEN_DB_11);  // routes GPIO0 to the ADC
-  rtc_gpio_pullup_en(GPIO_NUM_0);  // boards without an external pull-up on BOOT still read the rail
+// IO34 in mV, averaged.
+static int readPinMv() {
+  static bool init = false;
+  if (!init) { analogSetPinAttenuation(BATT_PIN, ADC_11db); init = true; }
   uint32_t sum = 0;
-  int n = 0;
-  for (int i = 0; i < 16; i++) {
-    int raw;
-    if (adc2_get_raw(ADC2_CHANNEL_1, ADC_WIDTH_BIT_12, &raw) == ESP_OK) { sum += raw; n++; }
-  }
-  rtc_gpio_deinit(GPIO_NUM_0);  // back to a digital input for the BOOT button
-  pinMode(0, INPUT_PULLUP);
-  if (!n) return 0;
-  int raw = sum / n;
-  lastRaw = raw;
-  if (simRailMv) return simRailMv < 0 ? -1 : simRailMv;
-  if (raw >= 4000) return -1;
-  int mv = esp_adc_cal_raw_to_voltage(raw, &adcChars);
-  return mv < 1500 ? 0 : mv;
+  for (int i = 0; i < 16; i++) sum += analogReadMilliVolts(BATT_PIN);
+  lastPinMv = sum / 16;
+  return simPinMv ? simPinMv : lastPinMv;
 }
 
 static void sampleBattery(bool boot = false) {
-  int mv = readRailMv();
-  if (mv == 0) return;
-  if (mv < 0) {
+  int mv = readPinMv();
+  int cell = mv * pcfg.scale / 1000;
+  if (cell < CELL_MIN || cell > CELL_MAX) {  // nothing plugged in (or a floating pin)
     battRun = 0;
-    if (boot || ++extRun >= 3) battKind = B_EXT;
+    if (boot || ++noneRun >= 3) battKind = B_NONE;
     return;
   }
-  extRun = 0;
+  noneRun = 0;
   if (battKind != B_BATT) {
     if (!boot && ++battRun < 3) return;
     battKind = B_BATT;
-    railMv = mv;
+    pinMv = mv;
   } else {
-    railMv += (mv - railMv) * 0.25f;
+    pinMv += (mv - pinMv) * 0.25f;
   }
 }
 
@@ -372,7 +355,6 @@ static int battPct(int mv) {
 
 static uint32_t battCol(int mv) { return mv > 3750 ? C_CHG : mv > WARN_MV ? C_DIS : C_DEAD; }
 static String fmtV(int mv) { return String(mv / 1000.0f, 2) + "V"; }
-static String fullLabel(const char* sep) { return String((3050 + pcfg.dropMv) / 1000.0f, 1) + sep + "V+"; }  // ADC tops out ~3.05 V
 
 // ---------------------------------------------------------------- drawing helpers
 struct Rect {
@@ -584,9 +566,9 @@ static void drawBattPill(LGFX_Sprite& s, int y) {
   const Rect& r = BAT_PILL;
   rrect(s, r.x, y, r.w, r.h, 21, pressed == ID_BATT ? C_CARD_HI : C_CARD);
   int cy = y + r.h / 2;
-  uint32_t c = battKind == B_BATT ? battCol(shownMv) : battKind == B_EXT ? C_CHG : C_FAINT;
-  drawCell(s, r.x + 11, cy - 7, 22, 14, battPct(shownMv) / 100.0f, c, battKind == B_EXT, battKind != B_NONE);
-  String t = battKind == B_BATT ? fmtV(shownMv) : battKind == B_EXT ? fullLabel("") : String("--");
+  uint32_t c = battKind == B_BATT ? battCol(shownMv) : C_FAINT;
+  drawCell(s, r.x + 11, cy - 7, 22, 14, battPct(shownMv) / 100.0f, c, false, battKind != B_NONE);
+  String t = battKind == B_BATT ? fmtV(shownMv) : String("--");
   text(s, t, r.x + r.w - 11, cy + 1, F_UIB, battKind == B_NONE ? C_FAINT : c, textdatum_t::middle_right);
 }
 
@@ -820,21 +802,19 @@ static void drawPowerBand(LGFX_Sprite& s, int off) {
   int Y = c.y - off;
   rrect(s, c.x, Y, c.w, c.h, 14, C_CARD);
   bool b = battKind == B_BATT;
-  uint32_t bc = b ? battCol(shownMv) : battKind == B_EXT ? C_CHG : C_FAINT;
-  drawCell(s, c.x + 14, Y + 28, 86, 44, battPct(shownMv) / 100.0f, bc, battKind == B_EXT, battKind != B_NONE);
-  String big = b ? String(shownMv / 1000.0f, 2) + " V" : battKind == B_EXT ? fullLabel(" ") : String("-- V");
+  uint32_t bc = b ? battCol(shownMv) : C_FAINT;
+  drawCell(s, c.x + 14, Y + 28, 86, 44, battPct(shownMv) / 100.0f, bc, false, b);
+  String big = b ? String(shownMv / 1000.0f, 2) + " V" : String("-- V");
   text(s, big, c.x + 118, Y + 30, F_TITLE, battKind == B_NONE ? C_FAINT : C_FG);
   String l1, l2;
   if (b) {
     int cut = CUT_MV[pcfg.cut];
     l1 = String(battPct(shownMv)) + "%   " +
-         (cut && shownMv <= cut + 100 ? "Almost empty" : shownMv <= WARN_MV ? "Low" : "On battery");
-    l2 = "3.3V rail " + String(railMv / 1000.0f, 2) + " + " + String(pcfg.dropMv / 1000.0f, 2);
-  } else if (battKind == B_EXT) {
-    l1 = "USB, or LiPo full";
-    l2 = "Reads below ~" + fullLabel("").substring(0, 3) + "V";
+         (cut && shownMv <= cut + 100 ? "Almost empty" : shownMv <= WARN_MV ? "Low" : "LiPo");
+    l2 = "IO34 " + String(pinMv / 1000.0f, 2) + "V  x" + String(pcfg.scale / 1000.0f, 3);
   } else {
-    l1 = "No reading yet";
+    l1 = "No LiPo connected";
+    l2 = "IO34 " + String(lastPinMv / 1000.0f, 2) + "V";
   }
   text(s, l1, c.x + 118, Y + 62, F_UIB, b ? bc : C_DIM);
   text(s, l2, c.x + 118, Y + 82, F_UI, C_FAINT);
@@ -860,7 +840,7 @@ static void drawPowerBand(LGFX_Sprite& s, int off) {
         s.fillRect(cx - 7, cy - 1, 15, 3, col(ic));
         if (k) s.fillRect(cx - 1, cy - 7, 3, 15, col(ic));
       }
-      text(s, b ? fmtV(shownMv) : String("on USB"), P_SEG_X + P_SEG_W / 2, ry + P_ROW_H / 2 + 1, F_UIB,
+      text(s, b ? fmtV(shownMv) : String("no LiPo"), P_SEG_X + P_SEG_W / 2, ry + P_ROW_H / 2 + 1, F_UIB,
            b ? C_FG : C_FAINT, textdatum_t::middle_center);
     }
   }
@@ -1309,9 +1289,11 @@ static void openPower(Screen back) {
 // Calibrate: nudge the regulator dropout so the reading matches a checker.
 static bool stepCal(int dir) {
   if (battKind != B_BATT) return false;
-  int d = constrain(pcfg.dropMv + dir * 10, DROP_MIN, DROP_MAX);
-  if (d == pcfg.dropMv) return false;
-  pcfg.dropMv = d;
+  // one step moves the reading by ~10 mV
+  int step = max(1, (int)lroundf(10000.0f / max(pinMv, 1000.0f)));
+  int d = constrain(pcfg.scale + dir * step, SCALE_MIN, SCALE_MAX);
+  if (d == pcfg.scale) return false;
+  pcfg.scale = d;
   shownMv = battMv();
   return true;
 }
@@ -1566,7 +1548,7 @@ static void powerOff(OffReason why) {
   tft.fillScreen(C_BG);
   int mv = battMv();
   uint32_t c = why == OFF_EMPTY ? C_DEAD : battCol(mv);
-  drawCell(tft, 100, 140, 120, 60, why == OFF_EMPTY ? 0.03f : battPct(mv) / 100.0f, c, battKind == B_EXT);
+  drawCell(tft, 100, 140, 120, 60, why == OFF_EMPTY ? 0.03f : battPct(mv) / 100.0f, c, false);
   tft.setTextDatum(textdatum_t::middle_center);
   auto line = [](const String& t, int y, const lgfx::IFont* f, uint32_t c) {
     tft.setFont(f);
@@ -1620,6 +1602,7 @@ static void powerTick(uint32_t now) {
   if (b && mv <= WARN_MV && !lowWarned) { lowWarned = true; warnPending = true; }
   if (!b || mv > WARN_MV + 100) lowWarned = warnPending = false;
 
+  if (screen == S_POWER && pstate != P_OFF && !tDown) renderRange(P_CARD.y, P_CARD.y + P_CARD.h);  // live numbers
   static BattKind shownKind = B_NONE;
   if (battKind != shownKind || (b && abs(mv - shownMv) >= 15)) {
     shownKind = battKind;
@@ -1849,15 +1832,27 @@ static void handleCmd(const String& c) {
   }
   if (c == "ping") { Serial.println("pong"); return; }
   if (c == "bat") {
-    Serial.printf("bat %s rail=%dmV batt=%dmV %d%% raw=%d drop=%dmV cut=%d warn=%d power=%d%s\n",
-                  battKind == B_BATT ? "lipo" : battKind == B_EXT ? "usb/full" : "none", (int)lroundf(railMv),
-                  battMv(), battPct(battMv()), lastRaw, pcfg.dropMv, CUT_MV[pcfg.cut], WARN_MV, (int)pstate,
-                  simRailMv ? " (simulated)" : "");
+    Serial.printf("bat %s io34=%dmV (now %dmV) batt=%dmV %d%% scale=%d cut=%d warn=%d power=%d%s\n",
+                  battKind == B_BATT ? "lipo" : "none", (int)lroundf(pinMv), lastPinMv, battMv(),
+                  battPct(battMv()), pcfg.scale, CUT_MV[pcfg.cut], WARN_MV, (int)pstate,
+                  simPinMv ? " (simulated)" : "");
+    return;
+  }
+  if (c == "adcscan") {  // free ADC pins in mV (none of these drive the display, touch or backlight)
+    static const uint8_t PINS[] = {32, 34, 35, 36, 39, 4, 25, 26};
+    Serial.print("adc");
+    for (uint8_t p : PINS) {
+      analogSetPinAttenuation(p, ADC_11db);
+      uint32_t sum = 0;
+      for (int i = 0; i < 8; i++) sum += analogReadMilliVolts(p);
+      Serial.printf(" %d=%u", p, sum / 8);
+    }
+    Serial.println();
     return;
   }
   if (c.startsWith("batsim")) {
-    simRailMv = c.substring(6).toInt();
-    Serial.printf("ok batsim %d\n", simRailMv);
+    simPinMv = c.substring(6).toInt();
+    Serial.printf("ok batsim %d\n", simPinMv);
     return;
   }
   noteActivity();  // anything else wakes the screen before it is drawn on
@@ -1906,7 +1901,7 @@ void setup() {
   for (int i = 0; i < 4; i++) { sampleBattery(true); delay(2); }
   shownMv = battMv();
   // A brown-out means the cell couldn't hold the board up: sleep without the screen, or it would loop.
-  if (brownout && battKind != B_EXT) deepSleepNow(false);
+  if (brownout && battKind == B_BATT) deepSleepNow(false);
 
   tft.init();
   tft.setRotation(0);  // portrait, USB at the bottom
