@@ -12,7 +12,7 @@ Field tracker for LiPo packs on the 4" "Cheap Yellow Display" (ESP32-3248S040: S
 
 Data is saved to flash (LittleFS, `/packs.txt`) and survives power cycles.
 
-## Board battery and power (v1.1)
+## Board battery and power (v1.1+)
 
 When the CYD runs off a 1S LiPo on its battery/power pins, the pill at the top right shows that LiPo's voltage, colored green / amber (below 3.75 V) / red (at or below 3.60 V). **Tap it** for the **Power** screen.
 
@@ -94,3 +94,4 @@ Reuses the CYD Checklist's calibration if that was on the board before; otherwis
 - `t x y`: tap, `h x y`: long press
 - `get`: prints packs.txt between `BEGIN` and `END`; `put`: the following lines up to `END` replace it
 - `bat`: board battery reading (rail, estimated LiPo voltage, %, calibration, cut-off)
+- `batsim <mV>`: pretend the 3.3 V rail reads this many mV (testing the low-battery screens on USB); `batsim 0` turns it off

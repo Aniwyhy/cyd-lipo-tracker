@@ -19,7 +19,7 @@
 #include <esp_system.h>
 #include <vector>
 
-static const char* FW_VERSION = "1.1.0";
+static const char* FW_VERSION = "1.1.1";
 
 // ---------------------------------------------------------------- display
 class LGFX : public lgfx::LGFX_Device {
@@ -311,6 +311,7 @@ static int shownMv = 0;    // what the screen shows (changes in steps, so it doe
 static int extRun = 0, battRun = 0;
 static esp_adc_cal_characteristics_t adcChars;
 static bool adcReady = false;
+static int lastRaw = -1, simRailMv = 0;  // serial "batsim <rail mV>" fakes a reading for testing (0 = off)
 
 static int battMv() { return (int)lroundf(railMv) + pcfg.dropMv; }
 
@@ -332,6 +333,8 @@ static int readRailMv() {
   pinMode(0, INPUT_PULLUP);
   if (!n) return 0;
   int raw = sum / n;
+  lastRaw = raw;
+  if (simRailMv) return simRailMv < 0 ? -1 : simRailMv;
   if (raw >= 4000) return -1;
   int mv = esp_adc_cal_raw_to_voltage(raw, &adcChars);
   return mv < 1500 ? 0 : mv;
@@ -503,8 +506,8 @@ static const int CARD_W = 145, CARD_H = 124, CARD_X0 = 10, CARD_X1 = 165;
 static const int FOOT_H = 44;
 static const int ROW_H = 64, ROW_GAP = 8;
 
-static const Rect TABS = {12, 10, 202, 42};
-static const Rect BAT_PILL = {222, 10, 86, 42};
+static const Rect TABS = {12, 10, 194, 42};
+static const Rect BAT_PILL = {212, 10, 96, 42};
 static const Rect BTN_NEW = {SCR_W - 12 - 92, 58, 92, 32};
 static const Rect EMPTY_GO = {85, 340, 150, 46};
 
@@ -553,7 +556,7 @@ static Rect E_SAVE() { return edIndex >= 0 ? Rect{210, 422, 98, 48} : Rect{164, 
 // power screen
 static Screen pwrBack = S_KIT;
 static const Rect P_CARD = {12, 56, 296, 100};
-static const int P_ROWS = 5, P_ROW_Y = 168, P_ROW_H = 38, P_ROW_P = 46, P_SEG_X = 110, P_SEG_W = 198;
+static const int P_ROWS = 5, P_ROW_Y = 168, P_ROW_H = 38, P_ROW_P = 46, P_SEG_X = 112, P_SEG_W = 196;
 static const char* P_LABEL[] = {"Brightness", "Dim after", "Sleep after", "Cut off at", "Calibrate"};
 static int pOptCount(int row) { return row == 0 ? 3 : 4; }
 static Rect pOptRect(int row, int opt) {
@@ -582,9 +585,9 @@ static void drawBattPill(LGFX_Sprite& s, int y) {
   rrect(s, r.x, y, r.w, r.h, 21, pressed == ID_BATT ? C_CARD_HI : C_CARD);
   int cy = y + r.h / 2;
   uint32_t c = battKind == B_BATT ? battCol(shownMv) : battKind == B_EXT ? C_CHG : C_FAINT;
-  drawCell(s, r.x + 10, cy - 7, 24, 14, battPct(shownMv) / 100.0f, c, battKind == B_EXT, battKind != B_NONE);
+  drawCell(s, r.x + 11, cy - 7, 22, 14, battPct(shownMv) / 100.0f, c, battKind == B_EXT, battKind != B_NONE);
   String t = battKind == B_BATT ? fmtV(shownMv) : battKind == B_EXT ? fullLabel("") : String("--");
-  text(s, t, r.x + r.w - 10, cy + 1, F_UIB, battKind == B_NONE ? C_FAINT : c, textdatum_t::middle_right);
+  text(s, t, r.x + r.w - 11, cy + 1, F_UIB, battKind == B_NONE ? C_FAINT : c, textdatum_t::middle_right);
 }
 
 static void drawHeader(LGFX_Sprite& s, Screen w) {
@@ -839,7 +842,7 @@ static void drawPowerBand(LGFX_Sprite& s, int off) {
   // settings
   for (int row = 0; row < P_ROWS; row++) {
     int ry = P_ROW_Y + row * P_ROW_P - off;
-    text(s, P_LABEL[row], 16, ry + P_ROW_H / 2 + 1, F_UIB, C_DIM);
+    text(s, P_LABEL[row], 14, ry + P_ROW_H / 2 + 1, F_UI, C_DIM);
     if (row < 4) {
       for (int o = 0; o < pOptCount(row); o++) {
         Rect r = pOptRect(row, o);
@@ -861,7 +864,7 @@ static void drawPowerBand(LGFX_Sprite& s, int off) {
            b ? C_FG : C_FAINT, textdatum_t::middle_center);
     }
   }
-  text(s, "Calibrate: match your LiPo checker.", SCR_W / 2, 400 - off, F_UI, C_FAINT, textdatum_t::middle_center);
+  text(s, "Calibrate: match your LiPo checker.", SCR_W / 2, 406 - off, F_UI, C_FAINT, textdatum_t::middle_center);
   rrect(s, P_DONE.x, P_DONE.y - off, P_DONE.w, P_DONE.h, 14, pressed == ID_PDONE ? C_ACCENT_DK : C_ACCENT);
   text(s, "Done", SCR_W / 2, P_DONE.y + P_DONE.h / 2 + 1 - off, F_UIB, C_FG, textdatum_t::middle_center);
 }
@@ -1846,9 +1849,15 @@ static void handleCmd(const String& c) {
   }
   if (c == "ping") { Serial.println("pong"); return; }
   if (c == "bat") {
-    Serial.printf("bat %s rail=%dmV batt=%dmV %d%% drop=%dmV cut=%d warn=%d power=%d\n",
+    Serial.printf("bat %s rail=%dmV batt=%dmV %d%% raw=%d drop=%dmV cut=%d warn=%d power=%d%s\n",
                   battKind == B_BATT ? "lipo" : battKind == B_EXT ? "usb/full" : "none", (int)lroundf(railMv),
-                  battMv(), battPct(battMv()), pcfg.dropMv, CUT_MV[pcfg.cut], WARN_MV, (int)pstate);
+                  battMv(), battPct(battMv()), lastRaw, pcfg.dropMv, CUT_MV[pcfg.cut], WARN_MV, (int)pstate,
+                  simRailMv ? " (simulated)" : "");
+    return;
+  }
+  if (c.startsWith("batsim")) {
+    simRailMv = c.substring(6).toInt();
+    Serial.printf("ok batsim %d\n", simRailMv);
     return;
   }
   noteActivity();  // anything else wakes the screen before it is drawn on
@@ -1949,7 +1958,8 @@ void loop() {
     drawField();
   }
 
-  uint32_t idle = now - lastActivity, dimMs = DIM_S[pcfg.dim] * 1000UL;
+  // millis(), not now: lastActivity may have been set after now was taken this frame (that would wrap around)
+  uint32_t idle = millis() - lastActivity, dimMs = DIM_S[pcfg.dim] * 1000UL;
   if (!tDown) {
     if (pstate == P_ON && idle > dimMs) setPower(P_DIM);
     if (pstate == P_DIM && idle > dimMs + 60000) setPower(P_OFF);  // a minute dimmed, then the screen goes off
